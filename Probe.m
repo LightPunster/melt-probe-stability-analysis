@@ -267,10 +267,10 @@ classdef Probe
             %   contact forces and melting dynamics become critical).
             
             %TODO: This should be fluid & planet independent
-            load('meltProbeData.mat','mu_H2O','rho_H2O','T_H2O','g_e');
+            load('meltProbeData.mat','mu_wat','rho_wat','T_wat','g_e');
             g = g_e;
-            mu = interp1(T_H2O,mu_H2O,T);
-            rho = interp1(T_H2O,rho_H2O,T);
+            mu = interp1(T_wat,mu_wat,T);
+            rho = interp1(T_wat,rho_wat,T);
 
             %I_yy = obj.I(2,2) + rho*obj.M_rho(5,5); %Added mass not valid
             %since fluid is heavily bounded
@@ -284,10 +284,10 @@ classdef Probe
         end
         
         function [y,x_d] = WaterPocketPitchDynamics_Nonlinear(obj,x,u,T)
-            load('meltProbeData.mat','mu_H2O','rho_H2O','T_H2O','g_e');
+            load('meltProbeData.mat','mu_wat','rho_wat','T_wat','g_e');
             g = g_e;
-            mu = interp1(T_H2O,mu_H2O,T);
-            rho = interp1(T_H2O,rho_H2O,T);
+            mu = interp1(T_wat,mu_wat,T);
+            rho = interp1(T_wat,rho_wat,T);
             
             %I_yy = obj.I(2,2) + rho*obj.M_rho(5,5); %Added mass not valid
             %since fluid is heavily bounded
@@ -348,45 +348,164 @@ classdef Probe
             M = -abs(M)*sign(theta_d);
         end
         
-        function [P_req,P_dn,P_lat] = RequiredPower(obj,ROP,T_amb,method)
+        function [P_req,P_dn,P_lat,L_crit] = RequiredPower(obj,ROP,T_amb,method)
             V_mps = ROP/3600;
             
-            load('meltProbeData.mat','T_ice','rho_ice','cp_ice','L_melt','T_melt');
-            rho = interp1(T_ice,rho_ice,(T_amb + T_melt)/2); %Suggestion from Ulamec: use averages over temp range from T_ice to T_melt
-            cp = interp1(T_ice,cp_ice,(T_amb + T_melt)/2);
-            cw = 1000; %Specific heat of water (TODO unsure what temp to calculate at)
-                    
+            T_f = (7.4+11.4/2); %Observation in RECAS testing (i.e. condition dependent, but dependencies are unknown)
+            
+            load('meltProbeData.mat','g_e','T_ice','T_wat','rho_ice','rho_wat','cp_ice','cp_wat','k_ice','k_wat','mu_wat','L_melt','T_melt');
+            rho_i = interp1(T_ice,rho_ice,(T_amb + T_melt)/2); %Suggestion from Ulamec: use averages over temp range from T_ice to T_melt
+            rho_w = interp1(T_wat,rho_wat,(T_f + T_melt)/2);
+            cp_i = interp1(T_ice,cp_ice,(T_amb + T_melt)/2);
+            cp_w = interp1(T_wat,cp_wat,(T_f + T_melt)/2);
+            k_i = interp1(T_ice,k_ice,(T_melt + T_amb)/2);
+            k_w = interp1(T_wat,k_wat,(T_f + T_melt)/2);
+            mu = interp1(T_wat,mu_wat,(T_f + T_melt)/2);
+            alpha_i = k_i./(cp_i.*rho_i);
+            alpha_w = k_w./(cp_w.*rho_w);
+            
             switch method
                 case 'Ulamec' %Ulamec 2006 paper, pure melt probe
+                    alpha = 932; beta = 0.726;
                     
                     %Model only valid for certain values of x
                     x = obj.L./(V_mps*obj.A_x/pi);
-                    if (min(x) < 5e4)
-                        error('Max velocity is too large for model to be valid');
-                    end
-                    if (max(x) > 1e8)
-                        error('Min velocity is too small for model to be valid');
-                    end
-                    
-                    alpha = 932; beta = 0.726;
-                    P_dn = V_mps*rho*obj.A_x*(L_melt + cp*(T_melt - T_amb));
+%                     if (min(x) < 5e4)
+%                         error('Max velocity is too large for model to be valid');
+%                     end
+%                     if (max(x) > 1e8)
+%                         error('Min velocity is too small for model to be valid');
+%                     end
+                    P_dn = V_mps.*rho_i.*obj.A_x.*(L_melt + cp_i.*(T_melt - T_amb));
                     P_lat = (obj.A_x/pi)*V_mps.*(T_melt - T_amb)*alpha.*x.^beta;
                     P_req = P_dn + P_lat;
-                case 'Talalay' %Talalay 2014 paper, Li 2020 paper on RECAS
-                    k1 = 1.04; %1.03 - 1.05
-                    k2 = 0.75; %0.7 - 0.8
-                    k3 = 1.03; %1.02 - 1.05 %TODO Not sure what this should be
-                    T_f = (7.4+11.4/2); %Observation in RECAS testing (i.e. condition dependent, but dependencies are unknown)
                     
-                    %Cutting Energy, a.k.a. Specific Energy Consumption
-                    Q = k1*rho*obj.A_x*(L_melt + k3*cp*(T_melt - T_amb) + cw*(T_f - T_melt));
+                    P_dn((x<5e4)|(x>1e8)) = NaN;
+                    P_lat((x<5e4)|(x>1e8)) = NaN;
+                    P_req((x<5e4)|(x>1e8)) = NaN;
+                    L_crit = obj.L*ones(size(P_req)); %This calculation estimates the lateral power required
+                                    %such that the critical refreezing
+                                    %length is the length of the probe.
+                    
+                case 'Talalay' %Talalay 2014 paper, Li 2020 paper on RECAS
+                    k1 = 1;%1.04; %1.03 - 1.05
+                    k2 = 1;%0.75; %0.7 - 0.8
+                    k3 = 1;%1.03; %1.02 - 1.05 %TODO Not sure what this should be
+                    
+                    %Specific Energy Consumption (similar to cutting
+                    %energy, but relative to descent amount not volume
+                    Q12 = k1*rho_i.*obj.A_x.*(L_melt + k3*cp_i.*(T_melt - T_amb));
+                    Q3 = k1*rho_i.*obj.A_x.*cp_w.*(T_f - T_melt);
                     
                     %Total power
-                    P_req = V_mps.*Q/k2;
-                    P_dn = 0;
-                    P_lat = 0;
+                    P_req = V_mps.*(Q12+Q3)/k2;
+                    P_dn = V_mps.*Q12/k2;
+                    P_lat = V_mps.*Q3/k2;
+                    L_crit = zeros(size(P_req)); %TODO: Double check what this calc should be
+                    
+                case 'Kowalski' %Kowalsky 2018 paper
+                    alpha = 932; beta = 0.726; %called n & d in paper, but alpha & beta in Ulamec
+                    
+                    h_m_star = L_melt + cp_i.*(T_melt - T_amb); %reduced latent heat of melting
+                    Q_c = obj.A_x*rho_i.*V_mps.*h_m_star; %Heat flowing from water film to ice
+                    
+                    %TODO: This term SHOULD also account for things like
+                    %IceMole's ice screw (see paper)
+                    F_star = (obj.m - rho_w*obj.V)*g_e; %buoyancy-corrected force
+                    gamma_kow = (1./(20*alpha_w)).*(((rho_i./rho_w).*V_mps.*obj.r).^(4/3)).*((3*pi*mu./(2*F_star)).^(1/3));
+                    
+                    Q_h = ((7*gamma_kow+1)./(1-3*gamma_kow)).*Q_c;
+                    Q_e = Q_h - Q_c;
+                    
+                    P_dn = Q_c;
+                    P_req = Q_h;
+                    P_lat = Q_h - Q_e; %Via convective losses
+                    L_crit = ((Q_c.*(V_mps.^(beta-1)).*(obj.r^(2*(beta-1)))./(alpha*(T_melt - T_amb))).*((7*gamma_kow+1)./(1-3*gamma_kow) - 1)).^(1/beta);
+                
+                case 'Li' %Li 2020 paper
+                    Q_i = obj.A_x*rho_i.*V_mps.*(L_melt + cp_i.*(T_melt - T_amb)); %Power to melt ice
+                    gamma_li = 0.9; %0.5 to 0.9 (assumption) %Efficiency of thermal head
+                    Q_t = Q_i/gamma_li; %Input power to thermal head
+                    Q_w = Q_t - Q_i; %Power loss
+                    
+                    %If anyone ever reads this, I just want to say how
+                    %absolutely goddamn stunned I am that Newton's method
+                    %works perfectly for this ridiculous complex
+                    %calculation comprised of multiple integrals of
+                    %nonelementary functions. I mean math is crazy.
+                    
+                    %Use Newton's method to solve for critical refreezing length
+                    if numel(V_mps)==1 %(single point or only T_amb is varied)
+                        [L_crit,~,~] = newton(@(L) (Q_w - obj.QL_AamotAndLi(L,V_mps,T_amb)), obj.L*ones(size(T_amb)));
+                    else %(Mesh or only V_mps is varied)
+                        [L_crit,~,~] = newton(@(L) (Q_w - obj.QL_AamotAndLi(L,V_mps,T_amb)), obj.L*ones(size(V_mps))); 
+                    end
+                        
+                        
+                    P_dn = Q_i;
+                    if L_crit>obj.L %Wasted power is enough to keep from refreezing
+                        P_req = Q_t;
+                        P_lat = Q_w;
+                    else
+                        P_req = Q_t + 0;
+                        P_lat = Q_w + 0;
+                    end
+            end
+        end
+        
+        function Q_L_star = QL_AamotAndLi(obj,L_star,V_mps,T_amb)
+            
+            %Ice properties
+            load('meltProbeData.mat','T_ice','k_ice','rho_ice','cp_ice','T_melt');
+            
+            rho_i = interp1(T_ice,rho_ice,(T_amb + T_melt)/2); %Suggestion from Ulamec: use averages over temp range from T_ice to T_melt
+            cp_i = interp1(T_ice,cp_ice,(T_amb + T_melt)/2);
+            k_i = interp1(T_ice,k_ice,(T_melt + T_amb)/2);
+            alpha_i = k_i./(cp_i.*rho_i);
+            
+            %Constant outside integral
+            %(Note: The T_melt-T_amb is not mentioned in Li, but IS mentioned in Aamot)
+            K = (8*k_i.*(T_amb-T_melt)/pi);
+            err = 100/norm(K); %For err = n/abs(K), accurate to within n Watts (10 is the max accuracy I have been able to get to converge)
+            
+            %This integrand is described both in Li (2020) and Aamot(1967) (both
+            %originate from Aamot which originates from analysis of cylindrical
+            %heat flux)
+            integrand = @(x,z,alpha,V) exp((-alpha.*(log(x).^2).*z)./V)./...
+                                       (-x.*(-log(x)).*(besselj(0,obj.r.*(-log(x))).^2 + bessely(0,obj.r.*(-log(x))).^2));
+            
+            if (numel(V_mps)==1)&&(numel(T_amb)==1)
+                integrand_i = @(x,z) integrand(x,z,alpha_i,V_mps);
+                Q_L_star = K.*integral2(integrand_i,1e-10,1-1e-10,0,L_star,'AbsTol',err);
+            elseif (numel(V_mps)>1)&&(numel(T_amb)==1)
+                Q_L_star = zeros(size(V_mps));
+                for i=1:numel(V_mps)
+                    integrand_i = @(x,z) integrand(x,z,alpha_i,V_mps(i));
+                    Q_L_star(i) = K.*integral2(integrand_i,1e-10,1-1e-10,0,L_star(i),'AbsTol',err);
+                end
+            elseif (numel(V_mps)==1)&&(numel(T_amb)>1)
+                Q_L_star = zeros(size(T_amb));
+                for i=1:numel(T_amb)
+                    integrand_i = @(x,z) integrand(x,z,alpha_i(i),V_mps);
+                    Q_L_star(i) = K(i).*integral2(integrand_i,1e-10,1-1e-10,0,L_star(i),'AbsTol',err);
+                end
+             elseif (numel(V_mps)==numel(T_amb))
+                fprintf('Beginnning next newton iteration\n')
+                L_star
+                Q_L_star = zeros(size(V_mps));
+                for i=1:numel(V_mps)
+                    fprintf('\tCalculating L* for ROP = %f m/hr, T_amb = %f\n',V_mps(i)*3600,T_amb(i))
+                    integrand_i = @(x,z) integrand(x,z,alpha_i(i),V_mps(i));
+                    Q_L_star(i) = K(i).*integral2(integrand_i,1e-10,1-1e-10,0,L_star(i),'AbsTol',err);
+                end
+            else
+                error('V_mps & T_amb have incorrect dimensions.')
             end
         end
     end
 end
+
+
+
+     
 
